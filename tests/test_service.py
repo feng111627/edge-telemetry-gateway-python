@@ -159,3 +159,26 @@ def test_在线状态随时间迁移(svc, clk):
     assert svc.liveness("d1").value == "stale"
     clk.advance(240)
     assert svc.liveness("d1").value == "offline"
+
+
+def test_后台pump自动补偿失败数据(svc, clk):
+    state = {"fail": True}
+
+    async def processor(r: NormalizedRecord) -> None:
+        if state["fail"]:
+            raise RuntimeError("down")
+
+    svc.set_processor(processor)
+
+    async def scenario():
+        await svc.ingest_one(generic_payload())
+        svc.start_background_pump(interval=0.01)
+        await asyncio.sleep(0.05)  # 至少跑过一次 pump
+        state["fail"] = False
+        clk.advance(1.1)
+        await asyncio.sleep(0.05)
+        await svc.stop_background_pump()
+
+    asyncio.run(scenario())
+    assert svc.retry_queue.stats()["delivered"] == 1
+    assert svc.retry_queue.stats()["pending"] == 0

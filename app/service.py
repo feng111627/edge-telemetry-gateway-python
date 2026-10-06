@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from typing import Any
 
 from .config import Settings, settings as default_settings
@@ -28,10 +28,34 @@ class TelemetryService:
         self.store = DeviceStore(settings)
         self.retry_queue = RetryQueue(settings, time_func=time_func)
         self._processor: Processor | None = processor
+        self._pump_task: asyncio.Task | None = None
 
     def set_processor(self, processor: Processor) -> None:
         """注册下游处理器（例如转发到消息队列 / 告警引擎）。"""
         self._processor = processor
+
+    def start_background_pump(self, interval: float = 0.1) -> asyncio.Task:
+        """启动后台重试循环；重复调用时返回既有任务。"""
+        if self._pump_task is None or self._pump_task.done():
+            self._pump_task = asyncio.create_task(self._pump_loop(interval))
+        return self._pump_task
+
+    async def stop_background_pump(self) -> None:
+        if self._pump_task is not None:
+            self._pump_task.cancel()
+            try:
+                await self._pump_task
+            except asyncio.CancelledError:
+                pass
+            self._pump_task = None
+
+    async def _pump_loop(self, interval: float) -> None:
+        while True:
+            try:
+                await self.retry_pending()
+            except Exception:  # pragma: no cover - 后台循环必须永不退出
+                pass
+            await asyncio.sleep(interval)
 
     async def ingest_one(self, payload: Any) -> IngestResult:
         """处理一条原始上报。
