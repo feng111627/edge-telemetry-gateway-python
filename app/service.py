@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
 from .config import Settings, settings as default_settings
 from .errors import IngestError
-from .models import IngestResult, Liveness
-from .normalizer import normalize
+from .models import IngestResult, Liveness, NormalizedRecord
+from .normalizer import normalize as _normalize
 from .retry_queue import Processor, RetryQueue
 from .store import DeviceStore
 
@@ -29,19 +30,74 @@ class TelemetryService:
         self._processor: Processor | None = processor
 
     def set_processor(self, processor: Processor) -> None:
+        """注册下游处理器（例如转发到消息队列 / 告警引擎）。"""
         self._processor = processor
 
     async def ingest_one(self, payload: Any) -> IngestResult:
-        raise NotImplementedError
+        """处理一条原始上报。
+
+        流程：归一化（失败带可区分原因拒绝）-> 幂等写入存储 ->
+        投递下游（失败只暂存，不影响上报被接受这一结论）。
+        """
+        now = self._time()
+        try:
+            record: NormalizedRecord = _normalize(payload, now=now, settings=self._settings)
+        except IngestError as exc:
+            device_id = payload.get("device_id") if isinstance(payload, dict) else None
+            return IngestResult(
+                accepted=False, dedup_key="",
+                device_id=device_id if isinstance(device_id, str) else None,
+                reason=exc.reason, detail=exc.detail,
+            )
+
+        duplicate = await self.store.apply(record)
+        if not duplicate and self._processor is not None:
+            try:
+                await self._processor(record)
+            except Exception:
+                # 下游失败不丢数据：暂存后由退避重试补偿
+                self.retry_queue.enqueue(record)
+
+        return IngestResult(
+            accepted=True, dedup_key=record.dedup_key,
+            device_id=record.device_id, duplicate=duplicate,
+        )
 
     async def ingest_batch(self, payloads: list[Any]) -> list[IngestResult]:
-        raise NotImplementedError
+        """批量接入：逐条独立处理，单条畸形不影响其它条目。"""
+        return list(await asyncio.gather(*(self.ingest_one(p) for p in payloads)))
 
     async def retry_pending(self) -> dict[str, int]:
-        raise NotImplementedError
-
-    def status(self, device_id: str) -> dict[str, Any]:
-        raise NotImplementedError
+        """触发一轮重试。未注册下游处理器时为空操作。"""
+        if self._processor is None:
+            return {"processed": 0, "delivered": 0, "failed": 0, "dead": 0}
+        return await self.retry_queue.pump_once(self._processor)
 
     def liveness(self, device_id: str) -> Liveness:
-        raise NotImplementedError
+        return self.store.liveness(device_id, now=self._time())
+
+    def status(self, device_id: str) -> dict[str, Any]:
+        state = self.store.get_state(device_id)
+        latest = state.latest if state else None
+        return {
+            "device_id": device_id,
+            "liveness": self.liveness(device_id).value,
+            "last_seen": latest.received_at if latest else None,
+            "ts": latest.ts if latest else None,
+            "measurements": (
+                [{"metric": m.metric, "value": m.value} for m in latest.measurements]
+                if latest else []
+            ),
+            "history_size": len(state.history) if state else 0,
+        }
+
+    def history(self, device_id: str, limit: int | None = None) -> list[dict[str, Any]]:
+        return [
+            {
+                "ts": r.ts,
+                "received_at": r.received_at,
+                "source_format": r.source_format,
+                "measurements": [{"metric": m.metric, "value": m.value} for m in r.measurements],
+            }
+            for r in self.store.history(device_id, limit)
+        ]
