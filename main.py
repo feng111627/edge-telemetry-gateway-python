@@ -1,9 +1,10 @@
 import uvicorn
 from fastapi import FastAPI
 
-from app.api import router
+from app.api import install_lifespan, router
 
 app = FastAPI(title="Edge Telemetry Gateway")
+install_lifespan(app)
 app.include_router(router)
 
 
