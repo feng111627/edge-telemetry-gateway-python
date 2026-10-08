@@ -4,8 +4,11 @@ from __future__ import annotations
 BUSINESS_NAMES = {
     "test_normalizer": "数据归一化与可区分拒绝原因",
     "test_store": "状态存储（幂等/乱序/容量淘汰/设备隔离/并发）",
+    "test_timeliness": "时效判定（太旧/未来时间戳的确定结论）",
     "test_status": "在线状态判定（正常/迟滞/离线）",
     "test_retry": "失败暂存与指数退避重试",
+    "test_metrics": "接入质量汇总（分类计数/积压读数/并发准确）",
+    "test_worker": "后台自动补偿与最终放弃后的重新投递",
     "test_api": "端到端接入、查询与重试接口",
 }
 

@@ -1,10 +1,20 @@
+from contextlib import asynccontextmanager
+
 import uvicorn
 from fastapi import FastAPI
 
-from app.api import router
+from app import api
 
-app = FastAPI(title="Edge Telemetry Gateway")
-app.include_router(router)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    api.start_worker()   # 服务启动后后台自动补偿失败数据
+    yield
+    api.stop_worker()
+
+
+app = FastAPI(title="Edge Telemetry Gateway", lifespan=lifespan)
+app.include_router(api.router)
 
 
 @app.get("/")

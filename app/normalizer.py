@@ -72,6 +72,15 @@ def _parse_timestamp(raw: Any) -> float | None:
     return None
 
 
+def extract_device_id(source: str, payload: object) -> str | None:
+    """尽力从原始上报中提取 device_id（用于被拒绝数据的归类统计）。"""
+    fields = _FIELD_MAP.get(source)
+    if fields is None or not isinstance(payload, dict):
+        return None
+    device_id = payload.get(fields["device_id"])
+    return device_id if isinstance(device_id, str) and device_id else None
+
+
 def normalize(source: str, payload: object) -> NormalizeResult:
     """把不同来源的原始上报统一成 TelemetryRecord。"""
     fields = _FIELD_MAP.get(source)
